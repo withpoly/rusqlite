@@ -35,6 +35,16 @@ fn test_dummy_module() -> rusqlite::Result<()> {
         }
 
         fn best_index(&self, info: &mut IndexInfo) -> Result<()> {
+            // We approve the ability to use the IN constraint here
+            for (i, _) in info.constraints().enumerate() {
+                if info.has_in_constraint(i) {
+                    info.handle_in_constraint(i, true);
+                }
+            }
+            for (i, (_, mut u)) in info.constraints_and_usages().enumerate() {
+                u.set_argv_index(i as i32 + 1);
+                u.set_omit(true);
+            }
             info.set_estimated_cost(1.);
             Ok(())
         }
@@ -59,9 +69,13 @@ fn test_dummy_module() -> rusqlite::Result<()> {
             &mut self,
             _idx_num: c_int,
             _idx_str: Option<&str>,
-            _args: &Values<'_>,
+            args: &Values<'_>,
         ) -> Result<()> {
-            self.row_id = 1;
+            // Because we are doing an IN query where the row ids are 0,1,2, etc.,
+            // we can simply assert that the value is equal to the index.
+            for (i, value) in args.in_values(0).enumerate() {
+                assert_eq!(i as i64, value.as_i64()?);
+            }
             Ok(())
         }
 
@@ -71,7 +85,7 @@ fn test_dummy_module() -> rusqlite::Result<()> {
         }
 
         fn eof(&self) -> bool {
-            self.row_id > 1
+            self.row_id > 2
         }
 
         fn column(&self, ctx: &mut Context, _: c_int) -> Result<()> {
@@ -92,9 +106,11 @@ fn test_dummy_module() -> rusqlite::Result<()> {
         return Ok(());
     }
 
-    let mut s = db.prepare("SELECT * FROM dummy()")?;
-
-    let dummy = s.query_row([], |row| row.get::<_, i32>(0))?;
-    assert_eq!(1, dummy);
+    // Important: generate a sequence of 0..=2
+    let mut s = db.prepare("SELECT rowid FROM dummy() WHERE rowid IN (0,1,2)")?;
+    let mut dummy = s.query_map([], |row| row.get::<_, i32>(0))?;
+    for i in 0..=2 {
+        assert_eq!(i, dummy.next().unwrap().unwrap());
+    }
     Ok(())
 }
